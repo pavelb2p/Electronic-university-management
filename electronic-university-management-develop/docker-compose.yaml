@@ -1,0 +1,37 @@
+version: '2.1'
+services:
+  eum-api-server:
+    container_name: eum-api-server
+    depends_on:
+      eum-db:
+        condition: service_healthy
+    build:
+      context: ./
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+      - "8000:8000"
+    networks:
+      - internal-network
+
+  eum-db:
+    container_name: eum-db
+    image: mysql:5.7
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: 1234
+      MYSQL_DATABASE: eum_schema
+      MYSQL_USER: user
+      MYSQL_PASSWORD: 1234
+    ports:
+      - "3306:3306"
+    networks:
+      - internal-network
+    healthcheck:
+      test: [ "CMD", "mysqladmin" ,"ping", "-h", "localhost" ]
+      timeout: 20s
+      retries: 10
+
+networks:
+  internal-network:
+    driver: bridge

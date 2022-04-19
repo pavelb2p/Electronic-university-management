@@ -1,0 +1,98 @@
+image: maven:latest
+
+variables:
+  MAVEN_CLI_OPTS: "--batch-mode"
+  MAVEN_OPTS: "-Dmaven.repo.local=.m2/repository"
+
+stages:
+  - build
+  - test
+  - install
+  - deploy
+  - .post
+
+cache:
+  paths:
+    - .m2/repository/
+    - target/
+
+build:
+  stage: build
+  script:
+    - mvn $MAVEN_CLI_OPTS compile
+  only:
+    - merge_requests
+    - branches
+
+java:
+  stage: test
+  script:
+    - mvn verify
+  artifacts:
+    when: always
+    reports:
+      junit:
+        - target/surefire-reports/TEST-*.xml
+  only:
+    - branches
+
+test-coverage:
+  stage: test
+  script:
+    - mvn clean $MAVEN_CLI_OPTS org.jacoco:jacoco-maven-plugin:prepare-agent test jacoco:report
+  artifacts:
+    paths:
+      - target/site/jacoco/jacoco.xml
+  only:
+    - merge_requests
+
+test-visualize:
+  stage: .post
+  image: registry.gitlab.com/haynes/jacoco2cobertura:1.0.7
+  script:
+    # convert report from jacoco to cobertura, using relative project path
+    - python /opt/cover2cover.py target/site/jacoco/jacoco.xml $CI_PROJECT_DIR/src/main/java/ > target/site/cobertura.xml
+  needs: ["test-coverage"]
+  artifacts:
+    reports:
+      cobertura: target/site/cobertura.xml
+  only:
+    - merge_requests
+
+install:
+  stage: install
+  tags:
+    - docker
+  image: docker:latest
+  variables:
+    DOCKER_DRIVER: overlay
+  services:
+    - docker:dind
+  # Must be run in privileged mode https://gitlab.com/gitlab-org/gitlab-runner/-/issues/1544
+  # And have access to docker sock: https://gitlab.com/gitlab-org/gitlab-runner/-/issues/1986
+  script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+    - docker build --tag $CI_REGISTRY_IMAGE/eum-api-server:latest ./      # EUM API
+    - docker push $CI_REGISTRY_IMAGE/eum-api-server:latest
+  only:
+    - tags
+
+deploy:
+  stage: deploy
+  image: alpine:latest
+  before_script:
+    - 'command -v ssh-agent >/dev/null || ( apk add --update openssh )'
+    - eval $(ssh-agent -s)
+    - echo "$CLOUD_ID_RSA" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - ssh-keyscan $CLOUD_HOST >> ~/.ssh/known_hosts
+    - chmod 644 ~/.ssh/known_hosts
+  script:
+    - scp ./docker-compose-cloud.yaml $CLOUD_USER@$CLOUD_HOST:docker-compose.yaml
+    - ssh $CLOUD_USER@$CLOUD_HOST 'docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD:$PWD" -w="$PWD" docker/compose:1.24.0 down'
+    - ssh $CLOUD_USER@$CLOUD_HOST "docker pull $CI_REGISTRY_IMAGE/eum-api-server:latest"
+    - ssh $CLOUD_USER@$CLOUD_HOST "docker tag $CI_REGISTRY_IMAGE/eum-api-server:latest eum-api-server:latest"
+    - ssh $CLOUD_USER@$CLOUD_HOST 'docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD:$PWD" -w="$PWD" docker/compose:1.24.0 up -d'
+  only:
+    - tags

@@ -1,0 +1,1 @@
+ALTER TABLE eum_schema.user add column `is_enabled` BOOl DEFAULT 1;

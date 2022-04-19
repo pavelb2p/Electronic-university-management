@@ -1,0 +1,1 @@
+ALTER TABLE eum_schema.task add column `return_reason` varchar(200) NULL DEFAULT NULL;
